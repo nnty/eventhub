@@ -193,7 +193,6 @@ cancel returns 404, not 403) and **TC-312** (Clear All Bookings is functionally 
 **Expected Results**: `#refund-spinner` is visible immediately after clicking (status `'checking'`); spinner disappears and `#refund-result` appears after exactly 4000ms (`setTimeout(..., 4000)`)
 **Business Rule**: Rule 8 — `RefundEligibility` status state machine: `idle → checking → eligible/ineligible`
 **Suggested Layer**: E2E / Component
-
 ---
 
 ### TC-106: Total price is calculated as price × quantity
@@ -822,4 +821,459 @@ cancel returns 404, not 403) and **TC-312** (Clear All Bookings is functionally 
 2. Observe pagination controls
 **Expected Results**: `Pagination` component renders with `currentPage`/`totalPages` from the API response; clicking next page updates URL `?page=N` via `router.push` and loads next page of bookings
 **Business Rule**: Pagination in `BookingsContent` driven by `pagination` from API response
+**Suggested Layer**: E2E / Component
+
+---
+
+# EventHub — Create Events Test Scenarios
+
+Scope: Create Events (Flow 5 — Create an authenticated user's private event from the Admin UI or API)
+
+**Source discrepancy note**: The domain describes `category` and `city` as fixed value sets, but
+`validateCreateEvent` only checks that both are non-empty strings. The scenarios below record the
+implemented behavior where it differs from the domain expectation. The live UI uses
+`eventsApi.js` and Axios `client.js`, which attaches `localStorage.eventhub_token`.
+
+## Happy Path
+
+### TC-008: Create an event with all supported fields from the Admin UI
+**Category**: Happy Path
+**Priority**: P0
+**Preconditions**: User is logged in; `/admin/events` is accessible; a future datetime, non-negative price, and positive seat count are available
+**Steps**:
+1. Navigate to `/admin/events`
+2. Fill `#event-title-input`, `#admin-event-form textarea`, `getByLabel('Category')`, `getByLabel('City')`, `getByLabel('Venue')`, `getByLabel('Event Date & Time')`, `getByLabel('Price ($)')`, `getByLabel('Total Seats')`, and optional `getByLabel('Image URL (optional)')`
+3. Click `#add-event-btn`
+4. Observe the toast and `[data-testid="event-table-row"]`
+**Expected Results**: `POST /api/events` returns 201 with `success: true`, `message: "Event created successfully"`; the UI shows `Event created!`, resets the form, invalidates the events query, and the new private event appears with the supplied values, `availableSeats === totalSeats`, `isStatic === false`, and the current user's `userId`
+**Business Rule**: Flow 5; `eventService.createEvent` initializes available seats from total seats
+**Suggested Layer**: E2E
+
+### TC-009: Create an event through the API
+**Category**: Happy Path
+**Priority**: P0
+**Preconditions**: User has a valid JWT
+**Steps**:
+1. Send `POST /api/events` with valid title, description, category, venue, city, future ISO 8601 `eventDate`, `price`, `totalSeats`, and optional `imageUrl`
+2. Read the response body
+3. Send `GET /api/events/:id` using the same JWT
+**Expected Results**: POST returns 201 and the created event; GET returns the same event, including `availableSeats` equal to `totalSeats`, `isStatic: false`, and ownership scoped to the creator
+**Business Rule**: `POST /api/events`; user-created events are private to their creator
+**Suggested Layer**: API
+
+### TC-010: Create an event with no description or image URL
+**Category**: Happy Path
+**Priority**: P1
+**Preconditions**: User is authenticated; all required fields are valid
+**Steps**:
+1. Submit the Admin Event form with description and image URL blank
+2. Inspect the created event in the table or via `GET /api/events/:id`
+**Expected Results**: Creation succeeds; `description` is stored as an empty string and `imageUrl` is `null`; no validation error appears
+**Business Rule**: Description and image URL are optional
+**Suggested Layer**: E2E / API
+
+### TC-011: Create events in each UI category
+**Category**: Happy Path
+**Priority**: P1
+**Preconditions**: User is logged in; the form is empty
+**Steps**:
+1. Create one valid event selecting each `getByLabel('Category')` option: Conference, Concert, Sports, Workshop, and Festival
+2. Inspect each created row
+**Expected Results**: Each request succeeds and preserves the selected category in the response and table; the category select exposes exactly the five options listed by `EventForm`
+**Business Rule**: Supported category choices in `EventForm.CATEGORIES`
+**Suggested Layer**: E2E / Component
+
+### TC-012: Newly created event is visible only to its creator
+**Category**: Happy Path
+**Priority**: P1
+**Preconditions**: User A and User B both have valid accounts; User A can create events
+**Steps**:
+1. Create an event as User A and record its ID
+2. Fetch `GET /api/events` as User A and User B
+3. Fetch `GET /api/events/:id` as both users
+**Expected Results**: User A sees the event in list and detail; User B does not see it in the list and receives 404 for the detail request
+**Business Rule**: Static events are shared; dynamic events are private to their creator
+**Suggested Layer**: API
+
+## Business Rules
+
+### TC-110: Sixth dynamic event is retained without pruning
+**Category**: Business Rule
+**Priority**: P0
+**Preconditions**: User has exactly five dynamic events and any number of static events
+**Steps**:
+1. Create a sixth valid dynamic event
+2. Fetch `GET /api/events?limit=100`
+**Expected Results**: All six user-created events are present; no dynamic event is deleted; static events do not count toward this limit
+**Business Rule**: Maximum six user-created events per account
+**Suggested Layer**: API
+
+### TC-111: Seventh dynamic event prunes the oldest dynamic event
+**Category**: Business Rule
+**Priority**: P0
+**Preconditions**: User has six dynamic events created in a known order
+**Steps**:
+1. Record the oldest event ID and title
+2. Create a seventh valid dynamic event
+3. Fetch `GET /api/events?limit=100`
+**Expected Results**: Six dynamic events remain; the oldest dynamic event is gone and the new event is present
+**Business Rule**: FIFO pruning via `countUserDynamic` and `findOldestUserDynamic`; `MAX_USER_DYNAMIC_EVENTS = 6`
+**Suggested Layer**: API
+
+### TC-112: Event creation initializes availability from total seats
+**Category**: Business Rule
+**Priority**: P0
+**Preconditions**: User is authenticated; valid payload has `totalSeats: 25`
+**Steps**:
+1. Create the event through `POST /api/events`
+2. Read its response and then `GET /api/events/:id`
+**Expected Results**: Persisted `availableSeats` starts at 25 and does not inherit another event's availability; personal booking subtraction happens only when events are read
+**Business Rule**: `eventService.createEvent` sets available seats from parsed total seats
+**Suggested Layer**: API
+
+### TC-113: Numeric form values are sent and stored with correct types
+**Category**: Business Rule
+**Priority**: P1
+**Preconditions**: User is logged in; valid form values are available
+**Steps**:
+1. Enter decimal price `12.50` and integer seats `25`
+2. Submit `#admin-event-form`
+3. Inspect the POST payload and response
+**Expected Results**: UI sends a number from `parseFloat` and an integer from `parseInt`; API persists price `12.50` and seats `25`, not strings
+**Business Rule**: `EventForm.handleSubmit` and `eventService.createEvent` normalize numeric fields
+**Suggested Layer**: E2E / API
+
+### TC-114: Created event is included in the creator's paginated results
+**Category**: Business Rule
+**Priority**: P1
+**Preconditions**: User is authenticated; a valid event can be created
+**Steps**:
+1. Create an event
+2. Request `GET /api/events?page=1&limit=10`
+3. Open `/events` and inspect `getByTestId('event-card')`
+**Expected Results**: The event is eligible for the creator's list, pagination metadata is consistent, and its personal `availableSeats` is returned; static events remain visible
+**Business Rule**: Repository ownership clause is `isStatic: true OR userId`; list defaults to page 1 and API limit 10
+**Suggested Layer**: API / E2E
+
+## Security
+
+### TC-210: Unauthenticated Create Event API request returns 401
+**Category**: Security
+**Priority**: P0
+**Preconditions**: No Authorization header or token is invalid
+**Steps**:
+1. Send `POST /api/events` with an otherwise valid payload and no Bearer token
+2. Repeat with `Authorization: Bearer invalid-token`
+**Expected Results**: Both requests return HTTP 401 with the auth middleware's Unauthorized response; no event is created
+**Business Rule**: `router.use(authMiddleware)` protects every event route
+**Suggested Layer**: API
+
+### TC-211: Admin Create Event page requires authentication
+**Category**: Security
+**Priority**: P0
+**Preconditions**: Browser has no `eventhub_token`
+**Steps**:
+1. Navigate directly to `/admin/events`
+2. Observe the resulting route and network calls
+**Expected Results**: `AuthGuard` redirects to `/login`; the form is not usable and no unauthenticated POST is attempted
+**Business Rule**: Authenticated route gating; event APIs require Bearer authentication
+**Suggested Layer**: E2E
+
+### TC-212: Created event ownership comes from the authenticated user
+**Category**: Security
+**Priority**: P0
+**Preconditions**: User A and User B have separate valid JWTs
+**Steps**:
+1. Create an event as User A and record its `userId`
+2. Create another event as User B with the same payload
+3. Fetch both events as each user
+**Expected Results**: Each event is owned by the authenticated token's user; request-body ownership fields cannot claim another user's event
+**Business Rule**: `eventService.createEvent` sets `userId` from `req.user.userId`
+**Suggested Layer**: API
+
+### TC-213: User B cannot discover User A's private event
+**Category**: Security
+**Priority**: P0
+**Preconditions**: User A owns a dynamic event; User B is authenticated
+**Steps**:
+1. Send `GET /api/events` as User B with search text matching User A's event
+2. Send `GET /api/events/:userA_event_id` as User B
+**Expected Results**: The event is absent from list/search results and detail returns 404; no private fields are leaked
+**Business Rule**: Repository filters dynamic events by `userId`
+**Suggested Layer**: API
+
+### TC-214: Client cannot force a created event to become static
+**Category**: Security
+**Priority**: P1
+**Preconditions**: User is authenticated
+**Steps**:
+1. Send `POST /api/events` with valid fields plus `isStatic: true`, `userId: null`, and a different `userId`
+2. Inspect the response and subsequent list visibility
+**Expected Results**: Event is still `isStatic: false`, belongs to the authenticated user, and is private; client ownership flags are ignored
+**Business Rule**: `createEvent` constructs a whitelist payload with server-owned `userId` and `isStatic`
+**Suggested Layer**: API
+
+## Negative / Error
+
+### TC-315: Create Event form blocks submission when required fields are blank
+**Category**: Negative
+**Priority**: P0
+**Preconditions**: User is logged in; `/admin/events` is open
+**Steps**:
+1. Leave title, venue, city, date, price, or seats blank one at a time
+2. Click `#add-event-btn`
+3. Inspect validation text and the Network panel
+**Expected Results**: Field-level errors identify the missing value and no `POST /api/events` request is sent; category defaults to Conference
+**Business Rule**: `EventForm.validate` required-field checks
+**Suggested Layer**: E2E / Component
+
+### TC-316: Create Event API rejects missing required fields
+**Category**: Negative
+**Priority**: P0
+**Preconditions**: User has a valid JWT
+**Steps**:
+1. Send `POST /api/events` with one or more required fields omitted
+2. Inspect the response
+**Expected Results**: HTTP 400 with `error: "Validation failed"` and `details` naming each invalid field; no partial event is created
+**Business Rule**: `validateCreateEvent` required validators
+**Suggested Layer**: API
+
+### TC-317: Past or current event date is rejected by UI and API
+**Category**: Negative
+**Priority**: P0
+**Preconditions**: User is logged in; a valid payload except for date is available
+**Steps**:
+1. Enter a past or current value in `getByLabel('Event Date & Time')` and submit
+2. Send the same value as `eventDate` to `POST /api/events`
+**Expected Results**: UI shows `Must be a future date` and does not post; API returns 400 with `Event date must be in the future`
+**Business Rule**: Event date must be strictly future-dated
+**Suggested Layer**: E2E / API
+
+### TC-318: Create Event API rejects malformed event dates
+**Category**: Negative
+**Priority**: P1
+**Preconditions**: User has a valid JWT
+**Steps**:
+1. Send valid fields except `eventDate: "tomorrow"` and then `eventDate: ""`
+2. Inspect validation details
+**Expected Results**: HTTP 400 identifies `eventDate`; malformed values return the ISO 8601 error and blank values return the required-date error
+**Business Rule**: `isISO8601()` and required date validator
+**Suggested Layer**: API
+
+### TC-319: Create Event rejects negative price and non-positive seats
+**Category**: Negative
+**Priority**: P0
+**Preconditions**: User is authenticated; all other fields are valid
+**Steps**:
+1. Submit price `-0.01`, then seats `0` and `-1`
+2. Repeat the invalid values through `POST /api/events`
+**Expected Results**: UI blocks each request with the relevant field error; API returns 400 with the price or seats validation message; no event is created
+**Business Rule**: Price must be >= 0 and total seats must be an integer >= 1
+**Suggested Layer**: E2E / API
+
+### TC-320: Create Event rejects invalid image URLs at the API boundary
+**Category**: Negative
+**Priority**: P2
+**Preconditions**: User is authenticated; all required values are valid
+**Steps**:
+1. Send `imageUrl: "not-a-url"` through `POST /api/events`
+2. Enter the same value in `getByLabel('Image URL (optional)')` and submit the UI form
+**Expected Results**: API returns 400 with `Image URL must be a valid URL`; **source discrepancy**: the form has no client-side URL validation, so it posts the value and displays the API error toast
+**Business Rule**: Server validates optional image URL; `EventForm.validate` omits this check
+**Suggested Layer**: API / E2E
+
+### TC-321: Create Event API rejects non-integer seats and non-numeric price
+**Category**: Negative
+**Priority**: P1
+**Preconditions**: User has a valid JWT
+**Steps**:
+1. Send `price: "free"` and then `totalSeats: "2.5"` with otherwise valid fields
+2. Inspect validation details
+**Expected Results**: HTTP 400 identifies the invalid numeric field; no event is created for either request
+**Business Rule**: `isFloat({ min: 0 })` for price and `isInt({ min: 1 })` for total seats
+**Suggested Layer**: API
+
+### TC-322: Whitespace-only required text is rejected
+**Category**: Negative
+**Priority**: P1
+**Preconditions**: User is authenticated
+**Steps**:
+1. Enter spaces into title, category, venue, and city in separate submissions
+2. Submit the form and repeat with API payloads containing whitespace-only values
+**Expected Results**: UI shows required errors and sends no request; API trims these fields and returns HTTP 400
+**Business Rule**: Required text validators use `.trim().notEmpty()`; the form uses `.trim()` checks
+**Suggested Layer**: E2E / API
+
+## Edge Cases
+
+### TC-409: Zero-price event is accepted
+**Category**: Edge Case
+**Priority**: P1
+**Preconditions**: User is authenticated; all other fields are valid
+**Steps**:
+1. Set `getByLabel('Price ($)')` to `0`
+2. Create the event and fetch it via `GET /api/events/:id`
+**Expected Results**: Creation succeeds and stored price is 0
+**Business Rule**: Price lower boundary is 0
+**Suggested Layer**: E2E / API
+
+### TC-410: One-seat event is accepted and fully available
+**Category**: Edge Case
+**Priority**: P1
+**Preconditions**: User is authenticated; valid future date and price are available
+**Steps**:
+1. Set `getByLabel('Total Seats')` to `1`
+2. Create the event and fetch it
+**Expected Results**: Creation succeeds with `totalSeats: 1` and `availableSeats: 1`; one booking can exhaust its personal availability
+**Business Rule**: Total seats lower boundary is 1
+**Suggested Layer**: E2E / API
+
+### TC-411: Decimal price precision is preserved
+**Category**: Edge Case
+**Priority**: P1
+**Preconditions**: User is authenticated; all fields are valid
+**Steps**:
+1. Create an event with price `0.01` and total seats `1`
+2. Inspect the API response and detail representation
+**Expected Results**: Creation succeeds and price is represented as Decimal value 0.01, without integer rounding
+**Business Rule**: Event price is Decimal(10,2); form uses `step="0.01"`
+**Suggested Layer**: API
+
+### TC-412: Large valid integer seat count is accepted
+**Category**: Edge Case
+**Priority**: P2
+**Preconditions**: User is authenticated; database accepts the chosen integer
+**Steps**:
+1. Create an event with `totalSeats: 2147483647`
+2. Inspect the response
+**Expected Results**: Validation accepts the positive integer and `availableSeats` equals it; the create flow does not silently truncate it
+**Business Rule**: Validator requires only a positive integer; no business maximum is defined
+**Suggested Layer**: API
+
+### TC-413: Sixth-to-seventh transition prunes only dynamic events
+**Category**: Edge Case
+**Priority**: P0
+**Preconditions**: User has six dynamic events and seeded static events are visible
+**Steps**:
+1. Record IDs of all six dynamic events and one static event
+2. Create one more dynamic event
+3. Fetch `GET /api/events?limit=100`
+**Expected Results**: Exactly the oldest dynamic event is removed; static events remain untouched and dynamic count is six
+**Business Rule**: FIFO applies only to `userId` + `isStatic: false`
+**Suggested Layer**: API
+
+### TC-414: Duplicate event content is allowed
+**Category**: Edge Case
+**Priority**: P2
+**Preconditions**: User has fewer than six dynamic events
+**Steps**:
+1. Submit the same valid payload twice
+2. Compare both responses and list results
+**Expected Results**: Both requests succeed with distinct event IDs; no uniqueness rule exists for event content
+**Business Rule**: Event model has no uniqueness constraint on title, date, venue, or complete payload
+**Suggested Layer**: API
+
+### TC-415: Arbitrary non-empty category and city are accepted by the current API
+**Category**: Edge Case
+**Priority**: P1
+**Preconditions**: User is authenticated; other fields are valid
+**Steps**:
+1. Send `category: "Opera"` and `city: "Kolkata"` to `POST /api/events`
+2. Fetch the event and inspect `/events`
+**Expected Results**: **Actual current behavior**: API returns 201 and preserves both strings because validation only checks non-empty values. This conflicts with the documented category/city sets; the UI cannot select arbitrary categories because `EventForm` provides five fixed options, while city is free text
+**Business Rule**: Domain lists supported values; **source discrepancy**: server does not enforce those lists
+**Suggested Layer**: API / E2E
+
+## UI State
+
+### TC-511: Admin Event list shows a spinner while events are fetched
+**Category**: UI State
+**Priority**: P2
+**Preconditions**: User is authenticated; `/admin/events` is opened on a slow connection
+**Steps**:
+1. Throttle `GET /api/events`
+2. Observe the All Events section before the response arrives
+**Expected Results**: A large `Spinner` is shown; the table and empty state are not rendered until loading completes; the create form remains available
+**Business Rule**: `AdminEventsPage` `isLoading` branch
+**Suggested Layer**: Component / E2E
+
+### TC-512: Admin Event list shows empty state when no events are visible
+**Category**: UI State
+**Priority**: P1
+**Preconditions**: User is logged in and the events response is empty
+**Steps**:
+1. Navigate to `/admin/events`
+2. Observe the All Events section
+**Expected Results**: `EmptyState` shows `No events yet` and `Create your first event using the form above.` while the form remains usable
+**Business Rule**: `events.length === 0` branch in `AdminEventsPage`
+**Suggested Layer**: E2E / Component
+
+### TC-513: Create Event validation preserves entered values
+**Category**: UI State
+**Priority**: P1
+**Preconditions**: User is on `/admin/events`
+**Steps**:
+1. Enter valid title, venue, city, and date but leave price invalid
+2. Click `#add-event-btn`
+3. Correct only the price and inspect the other fields before resubmitting
+**Expected Results**: Price error is shown; entered values remain populated; after correction the form can submit without re-entering other values
+**Business Rule**: `setErrors` changes validation state without resetting `form`
+**Suggested Layer**: Component / E2E
+
+### TC-514: Successful creation resets the form and shows feedback
+**Category**: UI State
+**Priority**: P0
+**Preconditions**: User is authenticated; valid creation payload is ready
+**Steps**:
+1. Submit `#admin-event-form`
+2. Observe the toast and all form controls after the 201 response
+**Expected Results**: Toast says `Event created!`; all fields reset to `EMPTY` defaults, category returns to Conference, and the new row appears after query invalidation
+**Business Rule**: `useCreateEvent` success callback in `EventForm`
+**Suggested Layer**: E2E / Component
+
+### TC-515: Submit button indicates an in-flight create request
+**Category**: UI State
+**Priority**: P1
+**Preconditions**: User has filled a valid form; `POST /api/events` is delayed
+**Steps**:
+1. Click `#add-event-btn`
+2. Observe the button while the request is pending
+3. Attempt a second submission
+**Expected Results**: Button enters its loading state and is disabled by the shared Button component; duplicate submissions are prevented while `creating` is true
+**Business Rule**: `pending = creating || updating` and Button loading behavior
+**Suggested Layer**: Component / E2E
+
+### TC-516: API create failure displays an error toast and preserves the form
+**Category**: UI State
+**Priority**: P1
+**Preconditions**: User is authenticated; server returns 400 or 500 for the create request
+**Steps**:
+1. Fill a form that produces a server-side error, such as an invalid image URL
+2. Click `#add-event-btn`
+3. Observe the toast and form values
+**Expected Results**: Error toast displays the API message; form is not reset; no new row appears; submit control returns to idle
+**Business Rule**: `onError` calls `toast(err.message, 'error')`; reset occurs only in `onSuccess`
+**Suggested Layer**: E2E / Component
+
+### TC-517: Admin table marks static events read-only
+**Category**: UI State
+**Priority**: P1
+**Preconditions**: At least one seeded static event is returned by `GET /api/events`
+**Steps**:
+1. Navigate to `/admin/events`
+2. Locate the static row by its `Featured` marker
+3. Inspect its Actions cell
+**Expected Results**: Static row shows `Read-only`; edit and delete controls are absent for that row, while dynamic rows expose them
+**Business Rule**: Static events are immutable and cannot be edited or deleted
+**Suggested Layer**: E2E
+
+### TC-518: Sandbox warning reflects the source thresholds
+**Category**: UI State
+**Priority**: P2
+**Preconditions**: Events query returns more than five visible events
+**Steps**:
+1. Navigate to `/admin/events` and `/events`
+2. Observe the warning banners
+**Expected Results**: Admin page always warns that six events are allowed; public page shows its sandbox banner when `events.length > 5`. **Source discrepancy**: the domain describes a near-six threshold, while the public source uses strictly greater than five and the admin source always renders its warning
+**Business Rule**: Sandbox warning and six-event FIFO limit
 **Suggested Layer**: E2E / Component
