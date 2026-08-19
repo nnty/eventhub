@@ -11,5 +11,6 @@ RUN npm ci --ignore-scripts
 COPY playwright.config.ts ./
 COPY tests/ ./tests/
 
-# Default: run all tests with a line reporter (CI-friendly)
-CMD ["npx", "playwright", "test", "--reporter=line"]
+# Default: run all tests, print progress to the console, and write the HTML
+# report to /app/playwright-report (bind-mounted back to the host by compose)
+CMD ["npx", "playwright", "test", "--reporter=html,line"]

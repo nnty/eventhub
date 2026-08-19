@@ -94,6 +94,46 @@ npm run dev
 
 ---
 
+## Run Playwright Tests with Docker (no Node.js or browsers required)
+
+The Playwright suite runs against the hosted deployment
+(`https://eventhub.rahulshettyacademy.com`), so you don't need to run the app
+locally to test it — you just need Docker.
+
+```bash
+git clone <repo-url>
+cd eventhub
+docker compose up --build --exit-code-from tests
+```
+
+That single command builds an image on top of the official
+`mcr.microsoft.com/playwright` base (Chromium pre-installed), runs the full
+suite inside the container, and exits with the tests' pass/fail status. The
+HTML report and any traces/screenshots/videos from failed tests are written
+to `./playwright-report/` and `./test-results/` on your host via bind mounts,
+so nothing is left behind inside the container.
+
+View the report after the run:
+
+```bash
+npx playwright show-report
+```
+
+(or just open `playwright-report/index.html` in a browser — no Node.js
+install needed for that step either).
+
+Equivalent plain Docker commands, if you'd rather not use Compose:
+
+```bash
+docker build -t eventhub-tests .
+docker run --rm \
+  -v "$(pwd)/playwright-report:/app/playwright-report" \
+  -v "$(pwd)/test-results:/app/test-results" \
+  eventhub-tests
+```
+
+---
+
 ## Root Scripts
 
 | Script | Description |
@@ -104,6 +144,7 @@ npm run dev
 | `npm run migrate` | Run `prisma migrate dev` (interactive, creates migration files) |
 | `npm run db:push` | Push schema to DB without migration files (non-interactive) |
 | `npm run build` | Build the Next.js frontend for production |
+| `npm run test:docker` | Run the Playwright suite in Docker (no local Node.js/browsers needed) |
 
 ---
 
