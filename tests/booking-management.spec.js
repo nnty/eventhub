@@ -218,4 +218,81 @@ test.describe('Booking Management — Critical Happy Paths', () => {
     await expect(page.getByRole('main').getByRole('link', { name: 'Browse Events' })).toBeVisible();
   });
 
+  // TC-103 ───────────────────────────────────────────────────────────────────
+  test('TC-103: single-ticket booking is eligible for refund after 4s check', async ({ page }) => {
+    // -- Step 1: Login, clear state, book a single ticket (default quantity = 1) --
+    await login(page);
+    await clearBookings(page);
+    const { bookingRef } = await bookEvent(page);
+
+    // -- Step 2: Navigate to booking detail via View Details --
+    await page.goto(`${BASE_URL}/bookings`);
+    const card = page.getByTestId('booking-card').filter({ hasText: bookingRef });
+    await card.getByRole('link', { name: 'View Details' }).click();
+    await expect(page).toHaveURL(/\/bookings\/\d+/);
+
+    // -- Step 3: Confirm the "Tickets" field shows 1 before checking eligibility --
+    await expect(page.getByText('Payment Summary')).toBeVisible();
+    const ticketsField = page.locator('div.flex.justify-between.items-start.gap-4').filter({ hasText: 'Tickets' });
+    await expect(ticketsField).toContainText('1');
+
+    // -- Step 4: Click "Check eligibility for refund?" --
+    await page.locator('#check-refund-btn').click();
+
+    // -- Step 5: Assert spinner appears while checking --
+    await expect(page.locator('#refund-spinner')).toBeVisible();
+
+    // -- Step 6: After the real ~4s check, assert eligible result replaces the spinner --
+    await expect(page.locator('#refund-spinner')).not.toBeVisible({ timeout: 6000 });
+    const result = page.locator('#refund-result');
+    await expect(result).toBeVisible();
+    await expect(result).toContainText('Eligible for refund');
+    await expect(result).toContainText('Single-ticket bookings qualify for a full refund');
+  });
+
+});
+
+// ── Cross-User Security ──────────────────────────────────────────────────────
+
+test.describe('Booking Management — Cross-User Security', () => {
+
+  // TC-200 ───────────────────────────────────────────────────────────────────
+  test('TC-200: user B sees "Access Denied" viewing user A\'s booking', async ({ browser }) => {
+    // -- Step 1: User A logs in, clears state, and creates a booking --
+    const contextA = await browser.newContext();
+    const pageA = await contextA.newPage();
+    await login(pageA);
+    await clearBookings(pageA);
+    const { bookingRef } = await bookEvent(pageA);
+
+    // -- Step 2: User A opens the booking detail page and captures its ID from the URL --
+    await pageA.goto(`${BASE_URL}/bookings`);
+    const cardA = pageA.getByTestId('booking-card').filter({ hasText: bookingRef });
+    await cardA.getByRole('link', { name: 'View Details' }).click();
+    await expect(pageA).toHaveURL(/\/bookings\/\d+/);
+    const bookingId = pageA.url().match(/\/bookings\/(\d+)/)?.[1];
+    expect(bookingId).toBeTruthy();
+    console.log(`User A's booking "${bookingRef}" has ID ${bookingId}`);
+    await contextA.close();
+
+    // -- Step 3: User B logs in via a fully separate browser context (own JWT/localStorage) --
+    const contextB = await browser.newContext();
+    const pageB = await contextB.newPage();
+    await pageB.goto(`${BASE_URL}/login`);
+    await pageB.getByPlaceholder('you@email.com').fill('rahulshetty1@yahoo.com');
+    await pageB.getByLabel('Password').fill(USER_PASSWORD);
+    await pageB.locator('#login-btn').click();
+    await expect(pageB.getByRole('link', { name: /Browse Events/i }).first()).toBeVisible();
+
+    // -- Step 4: User B navigates directly to user A's booking detail URL --
+    await pageB.goto(`${BASE_URL}/bookings/${bookingId}`);
+
+    // -- Step 5: Assert "Access Denied" is shown, not the booking's details --
+    await expect(pageB.getByText('Access Denied')).toBeVisible();
+    await expect(pageB.getByText('You are not authorized to view this booking.')).toBeVisible();
+    await expect(pageB.getByText(bookingRef)).not.toBeVisible();
+
+    await contextB.close();
+  });
+
 });
